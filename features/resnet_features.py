@@ -43,9 +43,7 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         # only conv with possibly not 1 stride
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
 
         # if stride is not 1 then self.downsample cannot be None
         self.downsample = downsample
@@ -55,10 +53,7 @@ class BasicBlock(nn.Module):
         identity = x
 
         out = self.conv1(x)
-        out = self.bn1(out)
-
         out = self.conv2(out)
-        out = self.bn2(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
@@ -84,12 +79,9 @@ class Bottleneck(nn.Module):
     def __init__(self, inplanes, planes, stride=1, downsample=None):
         super(Bottleneck, self).__init__()
         self.conv1 = conv1x1(inplanes, planes)
-        self.bn1 = nn.BatchNorm2d(planes)
         # only conv with possibly not 1 stride
         self.conv2 = conv3x3(planes, planes, stride)
-        self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = conv1x1(planes, planes * self.expansion)
-        self.bn3 = nn.BatchNorm2d(planes * self.expansion)
 
         # if stride is not 1 then self.downsample cannot be None
         self.downsample = downsample
@@ -99,13 +91,8 @@ class Bottleneck(nn.Module):
         identity = x
 
         out = self.conv1(x)
-        out = self.bn1(out)
-
         out = self.conv2(out)
-        out = self.bn2(out)
-
         out = self.conv3(out)
-        out = self.bn3(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
@@ -134,7 +121,6 @@ class ResNet_features(nn.Module):
 
         # the first convolutional layer before the structured sequence of blocks
         self.conv1 = BcosConv2d(3, 64, kernel_size=7, stride=2, padding=3)
-        self.bn1 = nn.BatchNorm2d(64)
 
         # comes from the first conv layer only (no maxpool)
         self.kernel_sizes = [7]
@@ -153,26 +139,19 @@ class ResNet_features(nn.Module):
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, BcosConv2d)):
                 nn.init.kaiming_normal_(m.linear.weight if hasattr(m, 'linear') else m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
 
         # Zero-initialize the last BN in each residual branch,
         # so that the residual branch starts with zeros, and each residual block behaves like an identity.
         # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        # Note: Not applicable anymore since BatchNorm layers have been removed
         if zero_init_residual:
-            for m in self.modules():
-                if isinstance(m, Bottleneck):
-                    nn.init.constant_(m.bn3.weight, 0)
-                elif isinstance(m, BasicBlock):
-                    nn.init.constant_(m.bn2.weight, 0)
+            pass
 
     def _make_layer(self, block, planes, num_blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                nn.BatchNorm2d(planes * block.expansion),
             )
 
         layers = []
@@ -194,7 +173,6 @@ class ResNet_features(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        x = self.bn1(x)
 
         x = self.layer1(x)
         x = self.layer2(x)
