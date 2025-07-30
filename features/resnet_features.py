@@ -44,7 +44,6 @@ class BasicBlock(nn.Module):
         # only conv with possibly not 1 stride
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = nn.BatchNorm2d(planes)
 
@@ -57,7 +56,6 @@ class BasicBlock(nn.Module):
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.relu(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
@@ -67,7 +65,6 @@ class BasicBlock(nn.Module):
 
         # the residual connection
         out += identity
-        out = self.relu(out)
 
         return out
 
@@ -93,7 +90,6 @@ class Bottleneck(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = conv1x1(planes, planes * self.expansion)
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
 
         # if stride is not 1 then self.downsample cannot be None
         self.downsample = downsample
@@ -104,11 +100,9 @@ class Bottleneck(nn.Module):
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.relu(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
-        out = self.relu(out)
 
         out = self.conv3(out)
         out = self.bn3(out)
@@ -117,7 +111,6 @@ class Bottleneck(nn.Module):
             identity = self.downsample(x)
 
         out += identity
-        out = self.relu(out)
 
         return out
 
@@ -142,12 +135,11 @@ class ResNet_features(nn.Module):
         # the first convolutional layer before the structured sequence of blocks
         self.conv1 = BcosConv2d(3, 64, kernel_size=7, stride=2, padding=3)
         self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        # comes from the first conv and the following max pool
-        self.kernel_sizes = [7, 3]
-        self.strides = [2, 2]
-        self.paddings = [3, 1]
+
+        # comes from the first conv layer only (no maxpool)
+        self.kernel_sizes = [7]
+        self.strides = [2]
+        self.paddings = [3]
 
         # the following layers, each layer is a sequence of blocks
         self.block = block
@@ -203,8 +195,6 @@ class ResNet_features(nn.Module):
     def forward(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
 
         x = self.layer1(x)
         x = self.layer2(x)
