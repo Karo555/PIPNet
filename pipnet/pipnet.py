@@ -51,6 +51,7 @@ base_architecture_to_features = {'resnet18': resnet18_features,
                                  'convnext_tiny_13': convnext_tiny_13_features}
 
 # adapted from https://pytorch.org/docs/stable/_modules/torch/nn/modules/linear.html#Linear
+# TODO - replace with B-cos transform 
 class NonNegLinear(nn.Module):
     """Applies a linear transformation to the incoming data with non-negative weights`
     """

@@ -1,8 +1,13 @@
+from math import cos
 import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 import os
 import copy
+import sys
+sys.path.append('../../B-cos')
+from modules.bcosconv2d import BcosConv2d
+
 
 model_urls = {
     'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
@@ -15,18 +20,18 @@ model_urls = {
 model_dir = './pretrained_models'
 
 def conv3x3(in_planes, out_planes, stride=1):
-    """3x3 convolution with padding"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
+    """3x3 b-cos convolution with padding"""
+    return BcosConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1)
 
 def conv3x3_nopad(in_planes, out_planes, stride=1):
-    """3x3 convolution without padding"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=0, bias=False)
+    """3x3 b-cos convolution without padding"""
+    return BcosConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=0)
 
 def conv1x1(in_planes, out_planes, stride=1):
-    """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+    """1x1 b-cos convolution"""
+    return BcosConv2d(in_planes, out_planes, kernel_size=1, stride=stride)
 
 
 class BasicBlock(nn.Module):
@@ -135,8 +140,7 @@ class ResNet_features(nn.Module):
         self.inplanes = 64
 
         # the first convolutional layer before the structured sequence of blocks
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
+        self.conv1 = BcosConv2d(3, 64, kernel_size=7, stride=2, padding=3)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -155,8 +159,8 @@ class ResNet_features(nn.Module):
 
         # initialize the parameters
         for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if isinstance(m, (nn.Conv2d, BcosConv2d)):
+                nn.init.kaiming_normal_(m.linear.weight if hasattr(m, 'linear') else m.weight, mode='fan_out', nonlinearity='relu')
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)

@@ -68,6 +68,7 @@ def run_pipnet(args=None):
         else:
             print("Classes: ", str(classes), flush=True)
     
+    #TODO - replace classic convolutional layers with B-cos transform
     # Create a convolutional network based on arguments and add 1x1 conv layer
     feature_net, add_on_layers, pool_layer, classification_layer, num_prototypes = get_network(len(classes), args)
    
@@ -118,6 +119,7 @@ def run_pipnet(args=None):
 
             print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
     
+    #TODO - replace loss function for BCE loss
     # Define classification loss function and scheduler
     criterion = nn.NLLLoss(reduction='mean').to(device)
     scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max=len(trainloader_pretraining)*args.epochs_pretrain, eta_min=args.lr_block/100., last_epoch=-1)
