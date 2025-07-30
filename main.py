@@ -4,7 +4,7 @@ import torch.nn as nn
 from util.args import get_args, save_args, get_optimizer_nn
 from util.data import get_dataloaders
 from util.func import init_weights_xavier
-from pipnet.train import train_pipnet
+from pipnet.train import train_pipnet, cosine_scheduler
 from pipnet.test import eval_pipnet, get_thresholds, eval_ood
 from util.eval_cub_csv import eval_prototypes_cub_parts_csv, get_topk_cub, get_proto_patches_cub
 import torch
@@ -120,9 +120,17 @@ def run_pipnet(args=None):
             print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
     
     #TODO - replace loss function for BCE loss
-    # Define classification loss function and scheduler
+    # Define classification loss function and learning rate schedules
     criterion = nn.NLLLoss(reduction='mean').to(device)
-    scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max=len(trainloader_pretraining)*args.epochs_pretrain, eta_min=args.lr_block/100., last_epoch=-1)
+    
+    # Create B-cos style cosine learning rate schedule for pretraining
+    lr_net_pretrain_schedule = cosine_scheduler(
+        base_value=args.lr_block, 
+        final_value=args.lr_block/100., 
+        epochs=args.epochs_pretrain,
+        warmup_epochs=min(5, args.epochs_pretrain//10),
+        start_warmup_value=args.lr_block/1000.
+    )
 
     # Forward one batch through the backbone to get the latent output size
     with torch.no_grad():
@@ -159,7 +167,7 @@ def run_pipnet(args=None):
         print("\nPretrain Epoch", epoch, "with batch size", trainloader_pretraining.batch_size, flush=True)
         
         # Pretrain prototypes
-        train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, scheduler_net, None, criterion, epoch, args.epochs_pretrain, device, pretrain=True, finetune=False)
+        train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, lr_net_pretrain_schedule, None, criterion, epoch, args.epochs_pretrain, device, pretrain=True, finetune=False)
         lrs_pretrain_net+=train_info['lrs_net']
         plt.clf()
         plt.plot(lrs_pretrain_net)
@@ -175,14 +183,50 @@ def run_pipnet(args=None):
             topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args)
         
     # SECOND TRAINING PHASE
-    # re-initialize optimizers and schedulers for second training phase
+    # re-initialize optimizers and learning rate schedules for second training phase
     optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(net, args)            
-    scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max=len(trainloader)*args.epochs, eta_min=args.lr_net/100.)
-    # scheduler for the classification layer is with restarts, such that the model can re-active zeroed-out prototypes. Hence an intuitive choice. 
-    if args.epochs<=30:
-        scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0=5, eta_min=0.001, T_mult=1, verbose=False)
+    
+    # Create learning rate schedules for main training phase
+    lr_net_schedule = cosine_scheduler(
+        base_value=args.lr_net, 
+        final_value=args.lr_net/100., 
+        epochs=args.epochs,
+        warmup_epochs=min(5, args.epochs//10),
+        start_warmup_value=args.lr_net/1000.
+    )
+    
+    # For classifier, we can use warm restarts by creating multiple cycles
+    # This helps re-activate zeroed-out prototypes
+    if args.epochs <= 30:
+        T_0 = 5
     else:
-        scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer_classifier, T_0=10, eta_min=0.001, T_mult=1, verbose=False)
+        T_0 = 10
+    
+    # Create multiple cosine cycles for warm restart effect
+    num_cycles = max(1, args.epochs // T_0)
+    lr_classifier_schedule = []
+    for cycle in range(num_cycles):
+        cycle_epochs = min(T_0, args.epochs - cycle * T_0)
+        if cycle_epochs > 0:
+            cycle_schedule = cosine_scheduler(
+                base_value=args.lr_classifier,
+                final_value=0.001,
+                epochs=cycle_epochs,
+                warmup_epochs=0,  # No warmup for restarts
+                start_warmup_value=0.001
+            )
+            lr_classifier_schedule.extend(cycle_schedule)
+    
+    # Pad or trim to exact number of epochs
+    if len(lr_classifier_schedule) > args.epochs:
+        lr_classifier_schedule = lr_classifier_schedule[:args.epochs]
+    elif len(lr_classifier_schedule) < args.epochs:
+        # Extend with final value
+        final_lr = lr_classifier_schedule[-1] if lr_classifier_schedule else 0.001
+        lr_classifier_schedule.extend([final_lr] * (args.epochs - len(lr_classifier_schedule)))
+    
+    import numpy as np
+    lr_classifier_schedule = np.array(lr_classifier_schedule)
     for param in net.module.parameters():
         param.requires_grad = False
     for param in net.module._classification.parameters():
@@ -241,7 +285,7 @@ def run_pipnet(args=None):
                     print("Classifier bias: ", net.module._classification.bias, flush=True)
                 torch.set_printoptions(profile="default")
 
-        train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, scheduler_classifier, criterion, epoch, args.epochs, device, pretrain=False, finetune=finetune)
+        train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, lr_net_schedule, lr_classifier_schedule, criterion, epoch, args.epochs, device, pretrain=False, finetune=finetune)
         lrs_net+=train_info['lrs_net']
         lrs_classifier+=train_info['lrs_class']
         # Evaluate model

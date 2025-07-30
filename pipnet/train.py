@@ -4,8 +4,71 @@ import torch.nn.functional as F
 import torch.optim
 import torch.utils.data
 import math
+import numpy as np
 
-def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, scheduler_net, scheduler_classifier, criterion, epoch, nr_epochs, device, pretrain=False, finetune=False, progress_prefix: str = 'Train Epoch'):
+def cosine_scheduler(base_value, final_value, epochs, warmup_epochs=5, start_warmup_value=1e-6):
+    """
+    Create a cosine annealing schedule with warmup (adapted from B-cos)
+    
+    Args:
+        base_value: Base learning rate after warmup
+        final_value: Final learning rate at the end of training
+        epochs: Total number of epochs
+        warmup_epochs: Number of warmup epochs
+        start_warmup_value: Starting learning rate for warmup
+    
+    Returns:
+        numpy array of learning rates for each epoch
+    """
+    warmup_schedule = np.array([])
+    warmup_iters = warmup_epochs
+    if warmup_epochs > 0:
+        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+
+    iters = np.arange(epochs - warmup_iters)
+    schedule = final_value + 0.5 * (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
+
+    schedule = np.concatenate((warmup_schedule, schedule))
+    assert len(schedule) == epochs
+    return schedule
+
+def apply_learning_rate_schedule(optimizer, lr_schedule, epoch):
+    """
+    Apply learning rate from pre-computed schedule to optimizer
+    
+    Args:
+        optimizer: The optimizer to update
+        lr_schedule: Pre-computed learning rate schedule (numpy array)
+        epoch: Current epoch (0-indexed)
+    """
+    if epoch < len(lr_schedule):
+        lr = lr_schedule[epoch]
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, lr_net_schedule, lr_classifier_schedule, criterion, epoch, nr_epochs, device, pretrain=False, finetune=False, progress_prefix: str = 'Train Epoch'):
+    """
+    Train PIPNet with cosine annealing learning rate schedule
+    
+    Args:
+        net: The PIPNet model
+        train_loader: Training data loader
+        optimizer_net: Network optimizer
+        optimizer_classifier: Classifier optimizer
+        lr_net_schedule: Pre-computed learning rate schedule for network (numpy array)
+        lr_classifier_schedule: Pre-computed learning rate schedule for classifier (numpy array)
+        criterion: Loss criterion
+        epoch: Current epoch (0-indexed)
+        nr_epochs: Total number of epochs
+        device: Device to run on
+        pretrain: Whether in pretraining mode
+        finetune: Whether in finetuning mode
+        progress_prefix: Prefix for progress bar
+    """
+
+    # Apply learning rate schedules
+    apply_learning_rate_schedule(optimizer_net, lr_net_schedule, epoch)
+    apply_learning_rate_schedule(optimizer_classifier, lr_classifier_schedule, epoch)
 
     # Make sure the model is in train mode
     net.train()
@@ -72,13 +135,19 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
 
         if not pretrain:
             optimizer_classifier.step()   
-            scheduler_classifier.step(epoch - 1 + (i/iters))
-            lrs_class.append(scheduler_classifier.get_last_lr()[0])
+            # Get current learning rate from schedule
+            if epoch < len(lr_classifier_schedule):
+                lrs_class.append(lr_classifier_schedule[epoch])
+            else:
+                lrs_class.append(optimizer_classifier.param_groups[0]['lr'])
      
         if not finetune:
             optimizer_net.step()
-            scheduler_net.step() 
-            lrs_net.append(scheduler_net.get_last_lr()[0])
+            # Get current learning rate from schedule  
+            if epoch < len(lr_net_schedule):
+                lrs_net.append(lr_net_schedule[epoch])
+            else:
+                lrs_net.append(optimizer_net.param_groups[0]['lr'])
         else:
             lrs_net.append(0.)
             
@@ -91,7 +160,11 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) #set weights in classification layer < 1e-3 to zero
                 net.module._classification.normalization_multiplier.copy_(torch.clamp(net.module._classification.normalization_multiplier.data, min=1.0)) 
                 if net.module._classification.bias is not None:
-                    net.module._classification.bias.copy_(torch.clamp(net.module._classification.bias.data, min=0.))  
+                    net.module._classification.bias.copy_(torch.clamp(net.module._classification.bias.data, min=0.))
+    
+    # Learning rates are already applied at the beginning of each epoch
+    # No need to step schedulers
+        
     train_info['train_accuracy'] = total_acc/float(i+1)
     train_info['loss'] = total_loss/float(i+1)
     train_info['lrs_net'] = lrs_net
@@ -161,3 +234,67 @@ def align_loss(inputs, targets, EPS=1e-12):
     loss = torch.einsum("nc,nc->n", [inputs, targets])
     loss = -torch.log(loss + EPS).mean()
     return loss
+
+def create_cosine_schedule_simple(base_lr, total_epochs, final_lr_ratio=0.01, warmup_epochs=5):
+    """
+    Simple wrapper to create a cosine schedule compatible with B-cos approach
+    
+    Args:
+        base_lr: Base learning rate after warmup
+        total_epochs: Total number of epochs 
+        final_lr_ratio: Final LR as ratio of base LR (default: 0.01 = 1%)
+        warmup_epochs: Number of warmup epochs (default: 5)
+    
+    Returns:
+        numpy array of learning rates for each epoch
+    
+    Example usage:
+        lr_schedule = create_cosine_schedule_simple(0.003, 200, 0.01, 5)
+        apply_learning_rate_schedule(optimizer, lr_schedule, epoch)
+    """
+    final_lr = base_lr * final_lr_ratio
+    start_warmup_lr = base_lr / 1000.
+    return cosine_scheduler(base_lr, final_lr, total_epochs, warmup_epochs, start_warmup_lr)
+
+def create_cosine_schedule_warm_restarts(base_lr, total_epochs, restart_period=10, final_lr=0.001):
+    """
+    Create a cosine schedule with warm restarts (multiple cycles)
+    
+    Args:
+        base_lr: Base learning rate for each cycle
+        total_epochs: Total number of epochs
+        restart_period: Length of each cycle  
+        final_lr: Final learning rate for each cycle
+    
+    Returns:
+        numpy array of learning rates for each epoch
+    
+    Example usage:
+        lr_schedule = create_cosine_schedule_warm_restarts(0.01, 200, 10, 0.001)
+        apply_learning_rate_schedule(optimizer, lr_schedule, epoch)
+    """
+    import numpy as np
+    
+    num_cycles = max(1, total_epochs // restart_period)
+    lr_schedule = []
+    
+    for cycle in range(num_cycles):
+        cycle_epochs = min(restart_period, total_epochs - cycle * restart_period)
+        if cycle_epochs > 0:
+            cycle_schedule = cosine_scheduler(
+                base_value=base_lr,
+                final_value=final_lr,
+                epochs=cycle_epochs,
+                warmup_epochs=0,  # No warmup for restarts
+                start_warmup_value=final_lr
+            )
+            lr_schedule.extend(cycle_schedule)
+    
+    # Pad or trim to exact number of epochs
+    if len(lr_schedule) > total_epochs:
+        lr_schedule = lr_schedule[:total_epochs]
+    elif len(lr_schedule) < total_epochs:
+        final_lr_val = lr_schedule[-1] if lr_schedule else final_lr
+        lr_schedule.extend([final_lr_val] * (total_epochs - len(lr_schedule)))
+    
+    return np.array(lr_schedule)
