@@ -3,9 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from features.resnet_features import resnet18_features, resnet34_features, resnet50_features, resnet50_features_inat, resnet101_features, resnet152_features
-from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features 
+# from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features 
 import torch
 from torch import Tensor
+import sys
+sys.path.append('../B-cos')
+from modules.bcosconv2d import BcosConv2d
 
 class PIPNet(nn.Module):
     def __init__(self,
@@ -46,30 +49,47 @@ base_architecture_to_features = {'resnet18': resnet18_features,
                                  'resnet50': resnet50_features,
                                  'resnet50_inat': resnet50_features_inat,
                                  'resnet101': resnet101_features,
-                                 'resnet152': resnet152_features,
-                                 'convnext_tiny_26': convnext_tiny_26_features,
-                                 'convnext_tiny_13': convnext_tiny_13_features}
+                                 'resnet152': resnet152_features}
+                                #  'convnext_tiny_26': convnext_tiny_26_features,
+                                #  'convnext_tiny_13': convnext_tiny_13_features}
 
-# adapted from https://pytorch.org/docs/stable/_modules/torch/nn/modules/linear.html#Linear
-# TODO - replace with B-cos transform 
-class NonNegLinear(nn.Module):
-    """Applies a linear transformation to the incoming data with non-negative weights`
-    """
+# B-cos linear transformation layer
+class BcosLinear(nn.Module):
+    """Applies a B-cos linear transformation to the incoming data using 1x1 convolution"""
+    
     def __init__(self, in_features: int, out_features: int, bias: bool = True,
                  device=None, dtype=None) -> None:
-        factory_kwargs = {'device': device, 'dtype': dtype}
-        super(NonNegLinear, self).__init__()
+        super(BcosLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = nn.Parameter(torch.empty((out_features, in_features), **factory_kwargs))
-        self.normalization_multiplier = nn.Parameter(torch.ones((1,),requires_grad=True))
+        
+        # Use BcosConv2d with 1x1 kernel to implement linear transformation
+        self.bcos_conv = BcosConv2d(in_features, out_features, kernel_size=1, stride=1, 
+                                   padding=0, b=2, max_out=2)
+        self.normalization_multiplier = nn.Parameter(torch.ones((1,), requires_grad=True))
+        
         if bias:
-            self.bias = nn.Parameter(torch.empty(out_features, **factory_kwargs))
+            self.bias = nn.Parameter(torch.empty(out_features, device=device, dtype=dtype))
         else:
             self.register_parameter('bias', None)
 
     def forward(self, input: Tensor) -> Tensor:
-        return F.linear(input,torch.relu(self.weight), self.bias)
+        # Reshape input to add spatial dimensions for conv operation
+        # input shape: (batch_size, in_features) -> (batch_size, in_features, 1, 1)
+        input_conv = input.unsqueeze(-1).unsqueeze(-1)
+        
+        # Apply B-cos convolution
+        output_conv = self.bcos_conv(input_conv)
+        
+        # Reshape back to linear format
+        # output shape: (batch_size, out_features, 1, 1) -> (batch_size, out_features)
+        output = output_conv.squeeze(-1).squeeze(-1)
+        
+        # Add bias if present
+        if self.bias is not None:
+            output = output + self.bias
+            
+        return output
 
 
 def get_network(num_classes: int, args: argparse.Namespace): 
@@ -78,8 +98,14 @@ def get_network(num_classes: int, args: argparse.Namespace):
     if 'next' in args.net:
         features_name = str(args.net).upper()
     if features_name.startswith('RES') or features_name.startswith('CONVNEXT'):
-        first_add_on_layer_in_channels = \
-            [i for i in features.modules() if isinstance(i, nn.Conv2d)][-1].out_channels
+        # Look for BcosConv2d layers since we're using B-cos ResNet
+        bcos_layers = [i for i in features.modules() if isinstance(i, BcosConv2d)]
+        if bcos_layers:
+            first_add_on_layer_in_channels = bcos_layers[-1].outc // bcos_layers[-1].max_out
+        else:
+            # Fallback to regular Conv2d if no BcosConv2d found
+            conv_layers = [i for i in features.modules() if isinstance(i, nn.Conv2d)]
+            first_add_on_layer_in_channels = conv_layers[-1].out_channels
     else:
         raise Exception('other base architecture NOT implemented')
     
@@ -103,9 +129,9 @@ def get_network(num_classes: int, args: argparse.Namespace):
                 ) 
     
     if args.bias:
-        classification_layer = NonNegLinear(num_prototypes, num_classes, bias=True)
+        classification_layer = BcosLinear(num_prototypes, num_classes, bias=True)
     else:
-        classification_layer = NonNegLinear(num_prototypes, num_classes, bias=False)
+        classification_layer = BcosLinear(num_prototypes, num_classes, bias=False)
         
     return features, add_on_layers, pool_layer, classification_layer, num_prototypes
 
