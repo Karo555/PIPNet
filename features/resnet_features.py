@@ -22,16 +22,17 @@ model_dir = './pretrained_models'
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 b-cos convolution with padding"""
     return BcosConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1)
+                     padding=1, b=2, max_out=2)
 
 def conv3x3_nopad(in_planes, out_planes, stride=1):
     """3x3 b-cos convolution without padding"""
     return BcosConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=0)
+                     padding=0, b=2, max_out=2)
 
 def conv1x1(in_planes, out_planes, stride=1):
     """1x1 b-cos convolution"""
-    return BcosConv2d(in_planes, out_planes, kernel_size=1, stride=stride)
+    return BcosConv2d(in_planes, out_planes, kernel_size=1, stride=stride, 
+                     b=2, max_out=2)
 
 
 class BasicBlock(nn.Module):
@@ -120,7 +121,7 @@ class ResNet_features(nn.Module):
         self.inplanes = 64
 
         # the first convolutional layer before the structured sequence of blocks
-        self.conv1 = BcosConv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.conv1 = BcosConv2d(3, 64, kernel_size=7, stride=2, padding=3, b=2, max_out=2)
 
         # comes from the first conv layer only (no maxpool)
         self.kernel_sizes = [7]
