@@ -55,9 +55,9 @@ base_architecture_to_features = {'resnet18': resnet18_features,
                                 #  'convnext_tiny_26': convnext_tiny_26_features,
                                 #  'convnext_tiny_13': convnext_tiny_13_features}
 
-# B-cos linear transformation layer
+# B-cos linear transformation layer with proper cosine alignment
 class BcosLinear(nn.Module):
-    """Applies a B-cos linear transformation to the incoming data using 1x1 convolution"""
+    """Applies a B-cos linear transformation with cosine alignment between prototypes and classes"""
     
     def __init__(self, in_features: int, out_features: int, bias: bool = True,
                  device=None, dtype=None) -> None:
@@ -65,27 +65,32 @@ class BcosLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         
-        # Use BcosConv2d with 1x1 kernel to implement linear transformation
-        self.bcos_conv = BcosConv2d(in_features, out_features, kernel_size=1, stride=1, 
-                                   padding=0, b=2, max_out=2)
+        # Class prototype weights (normalized)
+        self.weight = nn.Parameter(torch.empty((out_features, in_features), device=device, dtype=dtype))
         self.normalization_multiplier = nn.Parameter(torch.ones((1,), requires_grad=True))
         
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features, device=device, dtype=dtype))
         else:
             self.register_parameter('bias', None)
+            
+        # Initialize weights
+        nn.init.xavier_normal_(self.weight)
+        if self.bias is not None:
+            nn.init.zeros_(self.bias)
 
     def forward(self, input: Tensor) -> Tensor:
-        # Reshape input to add spatial dimensions for conv operation
-        # input shape: (batch_size, in_features) -> (batch_size, in_features, 1, 1)
-        input_conv = input.unsqueeze(-1).unsqueeze(-1)
+        # Normalize input (prototype activations)
+        input_norm = F.normalize(input, p=2, dim=1)
         
-        # Apply B-cos convolution
-        output_conv = self.bcos_conv(input_conv)
+        # Normalize class weights (class prototypes)
+        weight_norm = F.normalize(self.weight, p=2, dim=1)
         
-        # Reshape back to linear format
-        # output shape: (batch_size, out_features, 1, 1) -> (batch_size, out_features)
-        output = output_conv.squeeze(-1).squeeze(-1)
+        # Compute cosine similarity between input and class prototypes
+        cosine_sim = F.linear(input_norm, weight_norm)
+        
+        # Apply B-cos transformation: similarity * |similarity|
+        output = cosine_sim * cosine_sim.abs()
         
         # Add bias if present
         if self.bias is not None:
