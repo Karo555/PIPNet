@@ -137,8 +137,12 @@ class ResNet_features(nn.Module):
 
         # initialize the parameters
         for m in self.modules():
-            if isinstance(m, (nn.Conv2d, BcosConv2d)):
-                nn.init.kaiming_normal_(m.linear.weight if hasattr(m, 'linear') else m.weight, mode='fan_out', nonlinearity='relu')
+            if isinstance(m, BcosConv2d):
+                # Xavier initialization for B-cos networks (no ReLU activations)
+                nn.init.xavier_normal_(m.linear.weight)
+            elif isinstance(m, nn.Conv2d):
+                # Fallback for any remaining standard convolutions
+                nn.init.xavier_normal_(m.weight)
 
         # Zero-initialize the last BN in each residual branch,
         # so that the residual branch starts with zeros, and each residual block behaves like an identity.
