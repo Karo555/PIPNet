@@ -17,7 +17,6 @@ class PIPNet(nn.Module):
                  feature_net: nn.Module,
                  args: argparse.Namespace,
                  add_on_layers: nn.Module,
-                 pool_layer: nn.Module,
                  classification_layer: nn.Module
                  ):
         super().__init__()
@@ -27,20 +26,23 @@ class PIPNet(nn.Module):
         self._num_prototypes = num_prototypes
         self._net = feature_net
         self._add_on = add_on_layers
-        self._pool = pool_layer
         self._classification = classification_layer
         self._multiplier = classification_layer.normalization_multiplier
 
-    def forward(self, xs,  inference=False):
+    def forward(self, xs, inference=False):
         features = self._net(xs) 
         proto_features = self._add_on(features)
-        pooled = self._pool(proto_features)
+        
+        # For B-cos networks, we work directly with proto_features
+        # Apply global average pooling manually for classification
+        pooled = torch.mean(proto_features.view(proto_features.size(0), proto_features.size(1), -1), dim=2)
+        
         if inference:
             clamped_pooled = torch.where(pooled < 0.1, 0., pooled)  #during inference, ignore all prototypes that have 0.1 similarity or lower
-            out = self._classification(clamped_pooled) #shape (bs*2, num_classes)
+            out = self._classification(clamped_pooled) #shape (bs, num_classes)
             return proto_features, clamped_pooled, out
         else:
-            out = self._classification(pooled) #shape (bs*2, num_classes) 
+            out = self._classification(pooled) #shape (bs, num_classes) 
             return proto_features, pooled, out
 
 
@@ -123,17 +125,13 @@ def get_network(num_classes: int, args: argparse.Namespace):
             nn.Conv2d(in_channels=first_add_on_layer_in_channels, out_channels=num_prototypes, kernel_size=1, stride = 1, padding=0, bias=True), 
             nn.Softmax(dim=1), #softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1                
     )
-    pool_layer = nn.Sequential(
-                nn.AdaptiveMaxPool2d(output_size=(1,1)), #outputs (bs, ps,1,1)
-                nn.Flatten() #outputs (bs, ps)
-                ) 
     
     if args.bias:
         classification_layer = BcosLinear(num_prototypes, num_classes, bias=True)
     else:
         classification_layer = BcosLinear(num_prototypes, num_classes, bias=False)
         
-    return features, add_on_layers, pool_layer, classification_layer, num_prototypes
+    return features, add_on_layers, classification_layer, num_prototypes
 
 
     
